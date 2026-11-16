@@ -1,0 +1,3072 @@
+﻿=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\domain\base.py ===
+from sqlalchemy.orm import DeclarativeBase
+import os
+from sqlalchemy import create_engine
+
+os.makedirs("data", exist_ok=True)  # cria o diretÃ³rio "data" se nÃ£o existir
+engine = create_engine("sqlite:///data/checkin.db")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\domain\checkin.py ===
+
+from datetime import datetime
+from sqlalchemy import DateTime
+from domain.base import Base
+from sqlalchemy import String, Integer
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+
+
+class Checkin(Base):
+   __tablename__ = "checkin"
+
+   id: Mapped[int] = mapped_column(Integer, primary_key=True,autoincrement=True)
+   nome_hospede: Mapped[str] = mapped_column(String)
+   numero_quarto: Mapped[int] = mapped_column(Integer)
+   horario_entrada: Mapped[datetime] = mapped_column(DateTime)
+   horario_saida: Mapped[datetime] = mapped_column(DateTime)
+
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\domain\historico_checkin.py ===
+from sqlalchemy import String, Integer
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from datetime import datetime
+from sqlalchemy import DateTime
+from domain.base import Base
+
+
+    
+class HistoricoCheckin(Base):
+    __tablename__ = "historico_checkin"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nome_hospede: Mapped[str] = mapped_column(String)
+    numero_quarto: Mapped[int] = mapped_column(Integer)
+    horario_entrada: Mapped[datetime] = mapped_column(DateTime)
+    horario_saida: Mapped[datetime] = mapped_column(DateTime)
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\domain\usuario.py ===
+from datetime import date, datetime
+from sqlalchemy import String, Integer, Date, DateTime
+from sqlalchemy.orm import Mapped, mapped_column
+from domain.base import Base
+
+
+class Usuario(Base):
+    __tablename__ = "usuarios"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nome: Mapped[str] = mapped_column(String)
+    cpf: Mapped[str] = mapped_column(String, unique=True, index=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    senha: Mapped[str] = mapped_column(String)
+    telefone: Mapped[str] = mapped_column(String)
+    data_nascimento: Mapped[date] = mapped_column(Date)
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\domain\usuario_global.py ===
+from datetime import date, datetime
+from sqlalchemy import String, Integer, Date, DateTime
+from sqlalchemy.orm import Mapped, mapped_column
+from domain.base import Base
+
+
+class UsuarioGlobal(Base):
+    __tablename__ = "usuario_global"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String)
+    password: Mapped[str] =mapped_column(String)
+  
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\domain\__init__.py ===
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\repository\checkin_repository.py ===
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from domain.base import Base, engine
+from domain.checkin import Checkin
+from domain.historico_checkin import HistoricoCheckin
+
+
+class CheckinRepository:
+    def __init__(self):
+        Base.metadata.create_all(engine)  # cria a tabela se nÃ£o existir
+
+    def adicionar(self, checkin: Checkin) -> Checkin:
+        """Salva um novo checkin no banco """
+        with Session(engine) as session:
+            session.add(checkin)
+            session.commit()
+            session.refresh(checkin)  # atualiza o objeto com o id gerado
+            return checkin
+
+    def listar_todos(self) -> list[Checkin]:
+        """Retorna todos os checkins, na ordem de chegada (ORDER BY id)."""
+        with Session(engine) as session:
+            resultado = session.execute(
+                select(Checkin).order_by(Checkin.id)
+            )
+            return list(resultado.scalars().all())
+
+    def proximo(self) -> Checkin:
+        """Remove e retorna o checkin mais antigo da fila (o primeiro)."""
+        with Session(engine) as session:
+            resultado = session.execute(
+                select(Checkin).order_by(Checkin.id).limit(1)
+            )
+            checkin = resultado.scalars().first()
+
+            if checkin is None:
+                raise IndexError("Fila vazia â€” nÃ£o hÃ¡ check-in para atender")
+
+            registro_historico = HistoricoCheckin(
+                nome_hospede=checkin.nome_hospede,
+                numero_quarto=checkin.numero_quarto,
+                horario_entrada=checkin.horario_entrada,
+                horario_saida=checkin.horario_saida,
+            )
+            session.add(registro_historico)
+
+            session.delete(checkin)
+            session.commit()
+            return checkin
+
+    def remover_expirados(self) -> list[Checkin]:
+        """Remove do banco os checkins cujo horario_saida jÃ¡ passou,
+        registrando cada um no histÃ³rico antes de remover. Retorna a
+        lista dos checkins removidos (Ãºtil para log/depuraÃ§Ã£o)."""
+        with Session(engine) as session:
+            resultado = session.execute(
+                select(Checkin).where(Checkin.horario_saida < datetime.now())
+            )
+            expirados = list(resultado.scalars().all())
+
+            for checkin in expirados:
+                registro_historico = HistoricoCheckin(
+                    nome_hospede=checkin.nome_hospede,
+                    numero_quarto=checkin.numero_quarto,
+                    horario_entrada=checkin.horario_entrada,
+                    horario_saida=checkin.horario_saida,
+                )
+                session.add(registro_historico)
+                session.delete(checkin)
+
+            session.commit()
+            return expirados
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\repository\historico_chekin_repository.py ===
+from domain.checkin import Checkin
+from domain.base import Base, engine
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from domain.historico_checkin import HistoricoCheckin
+
+
+class HistoricoCheckinRepository:
+    
+
+    def listar_historico(self) -> list[HistoricoCheckin]:
+        """Retorna todos os checkins atendidos, na ordem de chegada (ORDER BY id)."""
+        with Session(engine) as session:
+            resultado = session.execute(
+                select(HistoricoCheckin).order_by(HistoricoCheckin.id)
+            )
+            return list(resultado.scalars().all())
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\repository\usuario_global_repository.py ===
+from typing import Optional
+from sqlalchemy.orm import Session
+
+from domain.usuario_global import UsuarioGlobal
+from domain.base import Base, engine
+
+
+class UsuarioGlobalRepository:
+
+    def __init__(self):
+        Base.metadata.create_all(engine)
+
+    def adicionar(self, usuario: UsuarioGlobal) -> UsuarioGlobal:
+        with Session(engine) as session:
+            session.add(usuario)
+            session.commit()
+            session.refresh(usuario)
+            return usuario
+
+    def buscar_usuario_global(self) -> Optional[UsuarioGlobal]:
+        with Session(engine) as session:
+            return session.query(UsuarioGlobal).first()
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\repository\usuario_repository.py ===
+from typing import Optional
+from sqlalchemy.orm import Session
+
+from domain.usuario import Usuario
+from domain.base import Base, engine
+
+
+class UsuarioRepository:
+
+    def __init__(self):
+        Base.metadata.create_all(engine)
+
+    def adicionar(self, usuario: Usuario) -> Usuario:
+        with Session(engine) as session:
+            session.add(usuario)
+            session.commit()
+            session.refresh(usuario)
+            return usuario
+
+    def buscar_por_id(self, usuario_id: int) -> Optional[Usuario]:
+        with Session(engine) as session:
+            return (
+                session.query(Usuario)
+                .filter(Usuario.id == usuario_id)
+                .first()
+            )
+
+    def buscar_por_email(self, email: str) -> Optional[Usuario]:
+        with Session(engine) as session:
+            return (
+                session.query(Usuario)
+                .filter(Usuario.email == email)
+                .first()
+            )
+
+    def buscar_por_cpf(self, cpf: str) -> Optional[Usuario]:
+        with Session(engine) as session:
+            return (
+                session.query(Usuario)
+                .filter(Usuario.cpf == cpf)
+                .first()
+            )
+
+    def listar_todos(self) -> list[Usuario]:
+        with Session(engine) as session:
+            return session.query(Usuario).all()
+
+    def atualizar(self, usuario: Usuario) -> Usuario:
+        with Session(engine) as session:
+            session.merge(usuario)
+            session.commit()
+            session.refresh(usuario)
+            return usuario
+
+    def deletar(self, usuario_id: int) -> bool:
+        with Session(engine) as session:
+            usuario = (
+                session.query(Usuario)
+                .filter(Usuario.id == usuario_id)
+                .first()
+            )
+
+            if usuario:
+                session.delete(usuario)
+                session.commit()
+                return True
+
+            return False
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\repository\__init__.py ===
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\routes\auth_routes.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from services.auth_service import AuthService, CredenciaisInvalidasError
+
+from services.usuario_service import UsuarioService, UsuarioNaoEncontradoError, DadosInvalidosError
+from repository.usuario_repository import UsuarioRepository
+
+router = APIRouter()
+
+_usuario_repository = UsuarioRepository()
+_usuario_service = UsuarioService(_usuario_repository)
+_auth_service = AuthService()
+
+
+class LoginSchema(BaseModel):
+    email: str
+    senha: str
+
+class LoginAdminSchema(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/auth/login")
+def login(dados: LoginSchema):
+    try:
+        usuario = _usuario_service.autenticar_usuario(dados.email, dados.senha)
+    except (UsuarioNaoEncontradoError, DadosInvalidosError):
+        raise HTTPException(status_code=401, detail="Email ou senha invÃ¡lidos")
+
+    token = _auth_service.gerar_token(usuario)
+    return {"token": token, "nome": usuario.nome}
+
+@router.post("/admin/login")
+def login_admin(dados: LoginAdminSchema):
+    try:
+        _auth_service.autenticar_admin(
+            dados.username,
+            dados.password
+        )
+
+        return {
+            "message": "AutenticaÃ§Ã£o realizada com sucesso",
+            "authenticated": True
+        }
+
+    except CredenciaisInvalidasError as erro:
+        raise HTTPException(
+            status_code=401,
+            detail=str(erro)
+        )
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\routes\checkin_routes.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from datetime import datetime
+
+from services.checkin_service import (
+    CheckinService,
+    QuartoJaOcupadoError,
+    NumeroQuartoInvalidoError,
+    FilaVaziaError,
+    DataEntradaInvalidaError,
+    DataSaidaInvalidaError
+)
+from repository.checkin_repository import CheckinRepository
+
+router = APIRouter()
+
+# InstÃ¢ncias compartilhadas (repository -> service)
+_repository = CheckinRepository()
+_service = CheckinService(_repository)
+
+
+# --- Schema: o que a API espera receber no POST ---
+class CheckinCreateSchema(BaseModel):
+    nome_hospede: str
+    numero_quarto: int
+    horario_entrada: datetime
+    horario_saida: datetime
+
+#rota para o front chekin-app
+@router.post("/fila")
+def solicitar_checkin(dados: CheckinCreateSchema):
+    try:
+        checkin = _service.solicitar_checkin(
+            nome_hospede=dados.nome_hospede,
+            numero_quarto=dados.numero_quarto,
+            horario_entrada=dados.horario_entrada,
+            horario_saida=dados.horario_saida,
+        )
+        return checkin
+    except ValueError as erro:
+        raise HTTPException(status_code=400, detail=str(erro))
+    except DataEntradaInvalidaError as erro:
+        raise HTTPException(status_code=400, detail=str(erro))
+    except DataSaidaInvalidaError as erro:
+        raise HTTPException(status_code=400, detail=str(erro))
+    except NumeroQuartoInvalidoError as erro:
+        raise HTTPException(status_code=400, detail=str(erro))
+    except QuartoJaOcupadoError as erro:
+        raise HTTPException(status_code=409, detail=str(erro))
+  
+
+#rota para o front chekin-recepcao
+@router.get("/fila")
+def listar_fila():
+    return _service.listar_fila()
+
+
+#rota para o front chekin-recepcao
+@router.delete("/fila/proximo")
+def atender_proximo():
+    try:
+        return _service.atender_proximo()
+    except FilaVaziaError as erro:
+        raise HTTPException(status_code=404, detail=str(erro))
+
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\routes\historico_chekin_routes.py ===
+#rota apra o front chekin-recepcao
+from fastapi import APIRouter
+from services.historico_chekin_service import HistoricoCheckinService  
+from repository.historico_chekin_repository import HistoricoCheckinRepository
+
+router=APIRouter()
+_repository = HistoricoCheckinRepository()
+_service = HistoricoCheckinService(_repository)
+
+
+
+@router.get("/historico")
+def listar_historico():
+    return _service.listar_historico()
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\routes\usuarios_routes.py ===
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from datetime import datetime
+
+from services.usuario_service import (
+    UsuarioService,
+    UsuarioJaExisteError,
+    MenorDeIdadeError,
+    UsuarioNaoEncontradoError,
+    DadosInvalidosError
+)
+from repository.usuario_repository import UsuarioRepository
+
+router = APIRouter()
+
+_repository = UsuarioRepository()
+_service = UsuarioService(_repository)
+
+
+class UsuarioCreateSchema(BaseModel):
+    nome: str
+    cpf: str
+    email: str
+    senha: str
+    telefone: str
+    data_nascimento: datetime
+
+
+@router.get("/usuarios")
+def listar_usuarios():
+    return _service.listar_usuarios()
+
+
+@router.post("/usuarios")
+def cadastrar_usuario(dados: UsuarioCreateSchema):
+    try:
+        usuario = _service.cadastrar_usuario(
+            nome=dados.nome,
+            cpf=dados.cpf,
+            email=dados.email,
+            senha=dados.senha,
+            telefone=dados.telefone,
+            data_nascimento=dados.data_nascimento.date()
+        )
+        return usuario
+    except (UsuarioJaExisteError, MenorDeIdadeError, DadosInvalidosError) as erro:
+        raise HTTPException(status_code=400, detail=str(erro))
+
+
+@router.get("/usuarios/{usuario_id}")
+def obter_usuario(usuario_id: int):
+    try:
+        usuario = _service.obter_por_id(usuario_id)
+        return usuario
+    except UsuarioNaoEncontradoError as erro:
+        raise HTTPException(status_code=404, detail=str(erro))
+
+
+@router.delete("/usuarios/{usuario_id}")
+def deletar_usuario(usuario_id: int):
+    try:
+        _service.remover_usuario(usuario_id)
+        return {"message": f"UsuÃ¡rio com ID {usuario_id} deletado com sucesso."}
+    except UsuarioNaoEncontradoError as erro:
+        raise HTTPException(status_code=404, detail=str(erro))
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\routes\usuario_global_routes.py ===
+from fastapi import APIRouter
+
+from repository.usuario_global_repository import UsuarioGlobalRepository
+from services.usuario_global_service import UsuarioGlobalService
+
+
+router = APIRouter()
+
+_repository = UsuarioGlobalRepository()
+_service = UsuarioGlobalService(_repository)
+
+
+@router.get("/admin/user")
+def verificar_usuario_global():
+    existe = _service.usuario_global_existe()
+
+    return {
+        "criado": existe
+    }
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\routes\__init__.py ===
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\security\senha.py ===
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(
+    schemes=["bcrypt"], 
+    deprecated="auto")
+
+def gerar_hash_senha(senha: str) -> str:
+    return pwd_context.hash(senha)
+
+def comparar_senha(senha: str, senha_hash: str) -> bool:
+    return pwd_context.verify(senha, senha_hash)
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\services\auth_service.py ===
+import secrets
+from datetime import datetime, timedelta
+
+from domain.usuario import Usuario
+from repository.usuario_global_repository import UsuarioGlobalRepository
+from security.senha import comparar_senha
+
+
+_tokens_ativos: dict[str, tuple[int, datetime]] = {}
+
+DURACAO_TOKEN = timedelta(hours=2)
+
+
+class CredenciaisInvalidasError(Exception):
+    pass
+
+
+class AuthService:
+
+    def __init__(self):
+        self._usuario_global_repository = UsuarioGlobalRepository()
+
+
+    
+
+    def gerar_token(self, usuario: Usuario) -> str:
+        token = secrets.token_urlsafe(32)
+        expira_em = datetime.now() + DURACAO_TOKEN
+
+        _tokens_ativos[token] = (usuario.id, expira_em)
+
+        return token
+
+    def validar_token(self, token: str) -> int | None:
+        """Retorna o id do usuÃ¡rio se o token for vÃ¡lido, ou None."""
+
+        dados = _tokens_ativos.get(token)
+
+        if dados is None:
+            return None
+
+        usuario_id, expira_em = dados
+
+        if datetime.now() > expira_em:
+            del _tokens_ativos[token]
+            return None
+
+        return usuario_id
+
+    def autenticar_admin(self, username: str, password: str) -> bool:
+
+        usuario = self._usuario_global_repository.buscar_usuario_global()
+
+        if not usuario:
+            raise CredenciaisInvalidasError(
+                "UsuÃ¡rio administrador nÃ£o encontrado."
+            )
+
+        if usuario.username != username:
+            raise CredenciaisInvalidasError(
+                "Credenciais de administrador invÃ¡lidas."
+            )
+
+        if not comparar_senha(password, usuario.password):
+            raise CredenciaisInvalidasError(
+                "Credenciais de administrador invÃ¡lidas."
+            )
+
+        
+
+        return True
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\services\checkin_service.py ===
+from domain.checkin import Checkin
+from repository.checkin_repository import CheckinRepository
+from datetime import datetime
+
+
+class QuartoJaOcupadoError(Exception):
+    """Levantada quando jÃ¡ existe um check-in ativo para esse quarto."""
+
+
+class FilaVaziaError(Exception):
+    """Levantada quando a recepÃ§Ã£o tenta atender e nÃ£o hÃ¡ ninguÃ©m na fila."""
+
+
+class NumeroQuartoInvalidoError(Exception):
+    """Levantada quando o nÃºmero do quarto estÃ¡ fora do limite do hotel."""
+
+
+class DataEntradaInvalidaError(Exception):
+    """Levantada quando a data de entrada Ã© invÃ¡lida (ex: no passado)."""
+
+
+class DataSaidaInvalidaError(Exception):
+    """Levantada quando a data de saÃ­da Ã© anterior Ã  de entrada."""
+
+
+class CheckinService:
+    total_quartos = 100
+
+    def __init__(self, repository: CheckinRepository):
+        self._repository = repository
+
+    def solicitar_checkin(
+        self,
+        nome_hospede: str,
+        numero_quarto: int,
+        horario_entrada: datetime,
+        horario_saida: datetime,
+    ) -> Checkin:
+        """Cria um novo check-in, validando dados de entrada antes de
+        checar regras de negÃ³cio contra o estado atual (quarto ocupado)."""
+
+        # 1. ValidaÃ§Ãµes de formato/valor dos dados recebidos, antes de
+        # qualquer consulta ao repositÃ³rio.
+        if not nome_hospede or not nome_hospede.strip():
+            raise ValueError("O nome do hÃ³spede nÃ£o pode ser vazio.")
+
+        if numero_quarto < 1 or numero_quarto > self.total_quartos:
+            raise NumeroQuartoInvalidoError(
+                f"NÃºmero do quarto invÃ¡lido. O hotel possui atÃ© {self.total_quartos} quartos disponÃ­veis."
+            )
+
+        if horario_entrada < datetime.now(horario_entrada.tzinfo):
+            raise DataEntradaInvalidaError(
+                "A data de entrada nÃ£o pode ser no passado."
+            )
+
+        if horario_saida < horario_entrada:
+            raise DataSaidaInvalidaError(
+                "A data de saÃ­da nÃ£o pode ser antes da de entrada."
+            )
+
+        # 2. Libera quartos cujo horÃ¡rio de saÃ­da jÃ¡ passou antes de
+        # checar ocupaÃ§Ã£o, para que um checkout automÃ¡tico nunca deixe
+        # um quarto "preso" indevidamente.
+        self._repository.remover_expirados()
+
+        # 3. Regra de negÃ³cio que depende do estado atual, checada por Ãºltimo.
+        todos = self._repository.listar_todos()
+        quarto_ocupado = any(c.numero_quarto == numero_quarto for c in todos)
+
+        if quarto_ocupado:
+            raise QuartoJaOcupadoError(
+                f"O quarto {numero_quarto} jÃ¡ estÃ¡ ocupado por outro check-in."
+            )
+
+        novo_checkin = Checkin(
+            nome_hospede=nome_hospede,
+            numero_quarto=numero_quarto,
+            horario_entrada=horario_entrada,
+            horario_saida=horario_saida,
+        )
+        return self._repository.adicionar(novo_checkin)
+
+    def atender_proximo(self) -> Checkin:
+        """Remove e retorna o check-in mais antigo da fila (FIFO).
+
+        Checa explicitamente se a fila estÃ¡ vazia em vez de depender de um
+        IndexError vindo da implementaÃ§Ã£o do repositÃ³rio â€” assim o
+        comportamento nÃ£o muda se o repositÃ³rio trocar de lista em memÃ³ria
+        para banco de dados, por exemplo.
+        """
+        self._repository.remover_expirados()
+
+        fila = self._repository.listar_todos()
+        if not fila:
+            raise FilaVaziaError("NÃ£o hÃ¡ check-ins aguardando na fila.")
+        return self._repository.proximo()
+
+    def listar_fila(self) -> list[Checkin]:
+        self._repository.remover_expirados()
+        return self._repository.listar_todos()
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\services\historico_chekin_service.py ===
+from domain.checkin import Checkin  
+from repository.historico_chekin_repository import HistoricoCheckinRepository
+from domain.historico_checkin import HistoricoCheckin
+
+class HistoricoCheckinService:
+    def __init__(self, repository: HistoricoCheckinRepository):
+        self._repository = repository
+
+    def listar_historico(self) -> list[HistoricoCheckin]:
+        return self._repository.listar_historico()
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\services\usuario_global_service.py ===
+from domain.usuario_global import UsuarioGlobal
+from repository.usuario_global_repository import UsuarioGlobalRepository
+from security.senha import gerar_hash_senha
+import os
+
+
+class UsuarioGlobalService:
+
+    def __init__(self, repository: UsuarioGlobalRepository):
+        self._repository = repository
+
+    def usuario_global_existe(self) -> bool:
+        usuario = self._repository.buscar_usuario_global()
+        return usuario is not None
+
+    def criar_usuario_global_padrao(self) -> UsuarioGlobal:
+        usuario = self._repository.buscar_usuario_global()
+
+        # Se jÃ¡ existe um usuÃ¡rio global, nÃ£o cria outro
+        if usuario:
+            return usuario
+
+        username = os.getenv("ADMIN_USERNAME")
+        password = os.getenv("ADMIN_PASSWORD")
+
+        if not username or not password:
+            raise ValueError(
+                "ADMIN_USERNAME e ADMIN_PASSWORD precisam estar configurados no .env"
+            )
+
+        senha_hash = gerar_hash_senha(password)
+
+        novo_usuario = UsuarioGlobal(
+            username=username,
+            password=senha_hash
+        )
+
+        return self._repository.adicionar(novo_usuario)
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\services\usuario_service.py ===
+from datetime import date
+from typing import Optional
+
+from domain.usuario import Usuario
+from repository.usuario_repository import UsuarioRepository
+from security.senha import gerar_hash_senha, comparar_senha
+
+
+class UsuarioJaExisteError(Exception):
+    """Levantado quando se tenta criar um e-mail ou CPF jÃ¡ existente no banco de dados."""
+
+
+class MenorDeIdadeError(Exception):
+    """Levantado quando o cliente tenta se cadastrar com menos de 18 anos."""
+
+
+class UsuarioNaoEncontradoError(Exception):
+    """Levantado quando a busca por um usuÃ¡rio especÃ­fico nÃ£o retorna resultados."""
+
+
+class DadosInvalidosError(Exception):
+    """Levantado quando dados obrigatÃ³rios do formulÃ¡rio nÃ£o sÃ£o informados."""
+
+
+class UsuarioService:
+
+    def __init__(self, repository: UsuarioRepository):
+        self._repository = repository
+
+    def cadastrar_usuario(
+        self,
+        nome: str,
+        cpf: str,
+        email: str,
+        senha: str,
+        telefone: str,
+        data_nascimento: date
+    ) -> Usuario:
+
+        if not nome or not cpf or not email or not senha:
+            raise DadosInvalidosError(
+                "Todos os campos obrigatÃ³rios devem ser preenchidos."
+            )
+
+        hoje = date.today()
+
+        idade = hoje.year - data_nascimento.year - (
+            (hoje.month, hoje.day)
+            < (data_nascimento.month, data_nascimento.day)
+        )
+
+        if idade < 18:
+            raise MenorDeIdadeError(
+                "O cliente deve ter no mÃ­nimo 18 anos para realizar cadastro."
+            )
+
+        if self._repository.buscar_por_email(email):
+            raise UsuarioJaExisteError(
+                f"JÃ¡ existe um usuÃ¡rio cadastrado com o e-mail: {email}"
+            )
+
+        if self._repository.buscar_por_cpf(cpf):
+            raise UsuarioJaExisteError(
+                f"JÃ¡ existe um usuÃ¡rio cadastrado com o CPF: {cpf}"
+            )
+
+        # Transforma a senha antes de salvar no banco
+        senha_hash = gerar_hash_senha(senha)
+
+        novo_usuario = Usuario(
+            nome=nome,
+            cpf=cpf,
+            email=email,
+            senha=senha_hash,
+            telefone=telefone,
+            data_nascimento=data_nascimento
+        )
+
+        return self._repository.adicionar(novo_usuario)
+        
+    def obter_por_id(self, usuario_id: int) -> Usuario:
+        usuario = self._repository.buscar_por_id(usuario_id)
+
+        if not usuario:
+            raise UsuarioNaoEncontradoError(
+                f"UsuÃ¡rio com ID {usuario_id} nÃ£o foi encontrado."
+            )
+
+        return usuario
+
+    def obter_por_email(self, email: str) -> Usuario:
+        usuario = self._repository.buscar_por_email(email)
+
+        if not usuario:
+            raise UsuarioNaoEncontradoError(
+                f"UsuÃ¡rio com e-mail {email} nÃ£o foi encontrado."
+            )
+
+        return usuario
+
+    def listar_usuarios(self) -> list[Usuario]:
+        return self._repository.listar_todos()
+
+    def atualizar_perfil(
+        self,
+        usuario_id: int,
+        nome: Optional[str] = None,
+        telefone: Optional[str] = None
+    ) -> Usuario:
+
+        usuario = self.obter_por_id(usuario_id)
+
+        if nome:
+            usuario.nome = nome
+
+        if telefone:
+            usuario.telefone = telefone
+
+        return self._repository.atualizar(usuario)
+
+    def remover_usuario(self, usuario_id: int) -> bool:
+        self.obter_por_id(usuario_id)
+        return self._repository.deletar(usuario_id)
+
+
+    
+
+    def autenticar_usuario(self, email: str, senha: str) -> Usuario:
+        usuario = self._repository.buscar_por_email(email)
+
+        if not usuario:
+            raise UsuarioNaoEncontradoError(
+                f"UsuÃ¡rio com e-mail {email} nÃ£o foi encontrado."
+            )
+
+        if not comparar_senha(senha, usuario.senha):
+            raise DadosInvalidosError("Senha incorreta.")
+
+        return usuario
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\services\__init__.py ===
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\backend\main.py ===
+# Executar os comandos abaixo para iniciar o servidor:
+# cd backend
+# uvicorn main:app --reload
+
+from contextlib import asynccontextmanager
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from routes.checkin_routes import router as checkin_routes
+from routes.historico_chekin_routes import router as historico_chekin_routes
+from routes.usuarios_routes import router as usuario_routes
+from routes.auth_routes import router as auth_routes
+from routes.usuario_global_routes import router as usuario_global_routes
+
+from repository.usuario_global_repository import UsuarioGlobalRepository
+from services.usuario_global_service import UsuarioGlobalService
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    # Inicializa o repository e o service do usuÃ¡rio global
+    usuario_global_repository = UsuarioGlobalRepository()
+    usuario_global_service = UsuarioGlobalService(
+        usuario_global_repository
+    )
+
+    # Cria o usuÃ¡rio global padrÃ£o caso ainda nÃ£o exista
+    usuario_global_service.criar_usuario_global_padrao()
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+app.include_router(checkin_routes)
+app.include_router(historico_chekin_routes)
+app.include_router(usuario_routes)
+app.include_router(auth_routes)
+app.include_router(usuario_global_routes)
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-app\index.html ===
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hotel CheckQ</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="app-container">
+
+    <section id="welcomeScreen" class="screen welcome-screen">
+        <div class="welcome-card">
+            <div class="logo" aria-label="Hotel CheckQ">ðŸ¨</div>
+            <h1>OlÃ¡, <span id="nomeUsuario">hÃ³spede</span>!</h1>
+            <p class="welcome-text">
+                Bem-vindo ao <strong>Hotel CheckQ</strong>.
+                Quando estiver pronto, solicite seu check-in
+                e acompanhe sua posiÃ§Ã£o na fila.
+            </p>
+            <button type="button" id="startCheckinBtn" class="primary-button">
+                Solicitar check-in <span aria-hidden="true">â†’</span>
+            </button>
+
+            <button type="button" id="logoutBtn" class="logout-button">
+                Sair da conta
+            </button>
+            
+            <p class="service-hours">
+                <span aria-hidden="true">â—·</span>
+                HorÃ¡rio de atendimento: 08h Ã s 22h
+            </p>
+        </div>
+    </section>
+
+    <section id="checkinScreen" class="screen checkin-screen hidden">
+        <div class="checkin-card">
+            <button type="button" id="backBtn" class="back-button">â† Voltar</button>
+
+            <header>
+                <h1>Solicitar Check-in</h1>
+                <p>Preencha os dados abaixo para entrar na fila da recepÃ§Ã£o.</p>
+            </header>
+
+            <form id="checkinForm">
+                <div class="input-group">
+                    <label for="nome_hospede">Nome Completo</label>
+                    <input type="text" id="nome_hospede" name="nome_hospede"
+                           autocomplete="name" required>
+                </div>
+
+                <div class="input-group">
+                    <label for="numero_quarto">NÃºmero do Quarto</label>
+                    <input type="number" id="numero_quarto" name="numero_quarto"
+                           min="1" required>
+                </div>
+
+                <div class="input-group">
+                    <label for="horario_entrada">Data e Hora de Entrada</label>
+                    <input type="datetime-local" id="horario_entrada"
+                           name="horario_entrada" required>
+                </div>
+
+                <div class="input-group">
+                    <label for="horario_saida">Data e Hora de SaÃ­da</label>
+                    <input type="datetime-local" id="horario_saida"
+                           name="horario_saida" required>
+                </div>
+
+                <button type="submit" id="submitBtn" class="primary-button">
+                    Entrar na Fila
+                </button>
+            </form>
+
+            <div id="mensagemFeedback" role="status" aria-live="polite"></div>
+        </div>
+    </section>
+
+</main>
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+<script src="script.js"></script>
+</body>
+</html>
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-app\script.js ===
+const API_URL = 'http://127.0.0.1:8000';
+
+const welcomeScreen = document.getElementById('welcomeScreen');
+const checkinScreen = document.getElementById('checkinScreen');
+const startCheckinBtn = document.getElementById('startCheckinBtn');
+const backBtn = document.getElementById('backBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+
+const nomeUsuario = localStorage.getItem('hospede_logado');
+
+document.getElementById('nomeUsuario').textContent =
+    nomeUsuario || 'hÃ³spede';
+
+const checkinForm = document.getElementById('checkinForm');
+const submitBtn = document.getElementById('submitBtn');
+const mensagem = document.getElementById('mensagemFeedback');
+
+function showCheckinScreen() {
+    welcomeScreen.classList.add('hidden');
+    checkinScreen.classList.remove('hidden');
+    document.getElementById('nome_hospede').focus();
+}
+
+function showWelcomeScreen() {
+    checkinScreen.classList.add('hidden');
+    welcomeScreen.classList.remove('hidden');
+    mensagem.textContent = '';
+}
+
+startCheckinBtn.addEventListener('click', showCheckinScreen);
+backBtn.addEventListener('click', showWelcomeScreen);
+
+logoutBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+
+    setTimeout(() => {
+        Swal.fire({
+            title: 'Sair da conta?',
+            text: 'VocÃª precisarÃ¡ fazer login novamente.',
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Sim, sair',
+            cancelButtonText: 'Cancelar',
+            confirmButtonColor: '#d33'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                localStorage.removeItem('hospede_logado');
+                window.location.href = '../login-app/index.html';
+            }
+        });
+    }, 0);
+});
+
+checkinForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Enviando...';
+    mensagem.textContent = '';
+
+    Swal.fire({
+        title: 'Enviando solicitaÃ§Ã£o...',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => {
+            Swal.showLoading();
+        }
+    });
+
+    const payload = {
+        nome_hospede: document.getElementById('nome_hospede').value,
+        numero_quarto: parseInt(document.getElementById('numero_quarto').value),
+        horario_entrada: document.getElementById('horario_entrada').value,
+        horario_saida: document.getElementById('horario_saida').value
+    };
+
+    try {
+        const response = await fetch(`${API_URL}/fila`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+    Swal.fire({
+        title: 'Sucesso!',
+        text: 'Check-in solicitado com sucesso! Aguarde na recepÃ§Ã£o.',
+        icon: 'success',
+        confirmButtonText: 'OK'
+    });
+    checkinForm.reset();
+} else if (response.status === 409) {
+    Swal.fire({
+        title: 'Quarto ocupado',
+        text: 'Este quarto jÃ¡ estÃ¡ ocupado!',
+        icon: 'error',
+        confirmButtonText: 'Entendi'
+    });
+} else if (response.status === 400) {
+    const erroData = await response.json();
+    Swal.fire({
+        title: 'Dados invÃ¡lidos',
+        text: erroData.detail || 'Verifique os dados informados.',
+        icon: 'warning',
+        confirmButtonText: 'Entendi'
+    });
+} else {
+    Swal.fire({
+        title: 'Erro',
+        text: 'Erro ao processar solicitaÃ§Ã£o.',
+        icon: 'error',
+        confirmButtonText: 'Entendi'
+    });
+}
+    } catch (error) {
+        console.error(error);
+        Swal.fire({
+            title: 'Erro de conexÃ£o',
+            text: 'Erro de conexÃ£o com o servidor. Verifique se a API estÃ¡ rodando.',
+            icon: 'error',
+            confirmButtonText: 'Entendi'
+        });
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Entrar na Fila';
+    }
+});
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-app\style.css ===
+* {
+    box-sizing: border-box;
+}
+
+:root {
+    --primary: #0284c7;
+    --primary-hover: #0369a1;
+    --bg-color: #f1f5f9;
+    --card-color: #ffffff;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --border: #cbd5e1;
+    --success: #15803d;
+    --error: #dc2626;
+}
+
+body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+}
+
+.app-container {
+    min-height: calc(100vh - 40px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.screen {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+}
+
+.hidden {
+    display: none;
+}
+
+/* Tela de apresentaÃ§Ã£o */
+.welcome-card,
+.checkin-card {
+    background: var(--card-color);
+    width: 100%;
+    max-width: 420px;
+    padding: 2.5rem;
+    border-radius: 16px;
+    box-shadow: 0 10px 25px rgba(15, 23, 42, 0.10);
+}
+
+.welcome-card {
+    text-align: center;
+}
+
+.logo {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 1.5rem;
+    border-radius: 50%;
+    background: #e0f2fe;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+}
+
+.welcome-card h1 {
+    margin: 0 0 0.75rem;
+    font-size: 1.8rem;
+}
+
+.welcome-text {
+    margin: 0 auto 2rem;
+    max-width: 330px;
+    color: var(--text-muted);
+    line-height: 1.6;
+}
+
+.primary-button {
+    width: 100%;
+    padding: 0.9rem 1rem;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+}
+
+.primary-button:hover {
+    background: var(--primary-hover);
+}
+
+.primary-button:active {
+    transform: scale(0.99);
+}
+
+.service-hours {
+    margin: 1.5rem 0 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+/* Tela de check-in */
+.back-button {
+    background: transparent;
+    border: none;
+    color: var(--primary);
+    padding: 0;
+    margin-bottom: 1.5rem;
+    font-size: 0.95rem;
+    cursor: pointer;
+}
+
+.back-button:hover {
+    color: var(--primary-hover);
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
+}
+
+header p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.input-group {
+    margin-bottom: 1.25rem;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #334155;
+    font-size: 0.9rem;
+}
+
+.input-group input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 1rem;
+    background: white;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.input-group input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.1);
+}
+
+#mensagemFeedback {
+    margin-top: 1.5rem;
+    text-align: center;
+    font-weight: 500;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    min-height: 20px;
+}
+
+@media (max-width: 480px) {
+    body {
+        padding: 12px;
+    }
+
+    .app-container {
+        min-height: calc(100vh - 24px);
+    }
+
+    .welcome-card,
+    .checkin-card {
+        padding: 2rem 1.25rem;
+        border-radius: 14px;
+    }
+
+    .welcome-card h1 {
+        font-size: 1.55rem;
+    }
+}
+
+.logout-button {
+    width: 100%;
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    background: transparent;
+    color: var(--error);
+    border: 1px solid var(--error);
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.logout-button:hover {
+    background: #fef2f2;
+}
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-recepcao\checkin_recepcao.html ===
+<!doctype html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ãrea da RecepÃ§Ã£o â€” Check-in</title>
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+    <header class="topbar">
+        <div class="topbar__brand">
+            <div class="topbar__logo">HC</div>
+            <div>
+                <h1>Ãrea da RecepÃ§Ã£o</h1>
+                <p class="topbar__subtitle">Check-in de hÃ³spedes</p>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 1.5rem; align-items: center;">
+            <a href="historico.html" style="padding: 0.5rem 1rem; border-radius: 6px; background: var(--color-primary-100); color: var(--color-primary-600); text-decoration: none; font-weight: bold; font-size: 0.9rem;">
+                Ver HistÃ³rico
+            </a>
+            <div class="topbar__counter" id="counter">
+                <span class="topbar__counter-number" id="counterNumber">0</span>
+                <span class="topbar__counter-label">na fila</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="stage">
+        <div class="stage__inner">
+            <!-- CARD PRINCIPAL: hÃ³spede atual da fila -->
+            <section class="checkin-card" id="checkinCard">
+                <div class="checkin-card__content" id="checkinContent">
+                    <span class="checkin-card__tag" id="cardTag">PrÃ³ximo check-in</span>
+
+                    <div class="checkin-card__guest">
+                        <div class="checkin-card__avatar" id="guestAvatar">â€”</div>
+                        <div>
+                            <h2 class="checkin-card__name" id="guestName">â€”</h2>
+                            <p class="checkin-card__room" id="guestRoom">â€”</p>
+                        </div>
+                    </div>
+
+                    <dl class="checkin-card__grid">
+                        <div>
+                            <dt>Data de entrada </dt>
+                            <dd id="guestCheckin">â€”</dd>
+                        </div>
+                        <div>
+                            <dt>Data de saÃ­da</dt>
+                            <dd id="guestCheckout">â€”</dd>
+                        </div>
+                        <div>
+                            <dt>NÃºmero do Quarto</dt>
+                            <dd id="guestWait">â€”</dd>
+                        </div> 
+                        <div>
+                            <dt>PosiÃ§Ã£o na fila</dt>
+                            <dd id="guestPosition">â€”</dd>
+                        </div>
+                    </dl>
+
+                    <button class="btn-attend" id="attendBtn">
+                        <span class="btn-attend__icon">âœ“</span>
+                        <span id="attendBtnLabel">Registrar check-in</span>
+                    </button>
+                </div>
+
+                <!-- estado vazio, dentro do prÃ³prio card -->
+                <div class="empty-state" id="emptyState" hidden>
+                    <div class="empty-state__illustration">
+                        <svg viewBox="0 0 120 120" width="88" height="88" fill="none"
+                            xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="60" cy="60" r="58" fill="var(--color-surface-alt)" />
+                            <rect x="30" y="46" width="60" height="40" rx="6" fill="var(--color-primary-100)"
+                                stroke="var(--color-primary-300)" stroke-width="2" />
+                            <rect x="38" y="54" width="44" height="6" rx="3" fill="var(--color-primary-300)" />
+                            <rect x="38" y="66" width="28" height="6" rx="3" fill="var(--color-primary-200)" />
+                            <circle cx="60" cy="34" r="10" fill="var(--color-primary-200)" />
+                            <path d="M46 46c0-8 6-14 14-14s14 6 14 14" stroke="var(--color-primary-300)"
+                                stroke-width="2" fill="none" />
+                            <path d="M42 92c4-10 12-16 18-16s14 6 18 16" stroke="var(--color-primary-300)"
+                                stroke-width="2" fill="none" stroke-linecap="round" />
+                        </svg>
+                    </div>
+                    <h3>Nenhum check-in aguardando no momento</h3>
+                    <p>Assim que um hÃ³spede entrar na fila, ele aparecerÃ¡ aqui automaticamente.</p>
+                </div>
+            </section>
+
+            <!-- coluna lateral: prÃ³ximos da fila + formulÃ¡rio de adicionar -->
+            <div class="side-column">
+                <aside class="upcoming" id="upcoming">
+                    <h4 class="upcoming__title">PrÃ³ximos na fila</h4>
+                    <div class="upcoming__list" id="upcomingList"></div>
+                </aside>
+            </div>
+        </div>
+    </main>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="script.js"></script>
+</body>
+
+</html>
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-recepcao\historico.html ===
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HistÃ³rico â€” RecepÃ§Ã£o</title>
+    <link rel="stylesheet" href="style.css" />
+    <style>
+        .historico-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            margin-top: 1rem;
+        }
+        .historico-table th {
+            padding: 1rem;
+            color: var(--text-muted);
+            border-bottom: 2px solid var(--color-primary-100);
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            letter-spacing: 0.5px;
+        }
+        .historico-table td {
+            padding: 1rem;
+            border-bottom: 1px solid #e2e8f0;
+            color: var(--text-main);
+        }
+        .historico-table tr:hover {
+            background-color: var(--color-surface-alt);
+        }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar__brand">
+            <div class="topbar__logo">HC</div>
+            <div>
+                <h1>HistÃ³rico de Check-ins</h1>
+                <p class="topbar__subtitle">Registros de hÃ³spedes atendidos</p>
+            </div>
+        </div>
+        <div>
+            <a href="checkin_recepcao.html" class="btn-attend" style="padding: 0.6rem 1.2rem; font-size: 0.95rem; text-decoration: none;">
+                â† Voltar para Fila
+            </a>
+        </div>
+    </header>
+
+    <main class="stage">
+        <section class="checkin-card" style="max-width: 100%;">
+            <h2 style="margin: 0 0 1rem 0; font-size: 1.25rem;">Check-ins ConcluÃ­dos</h2>
+            <div id="historicoContainer">
+                <p>Carregando histÃ³rico...</p>
+            </div>
+        </section>
+    </main>
+
+    <script src="historico.js"></script>
+</body>
+</html>
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-recepcao\historico.js ===
+const API_URL = 'http://127.0.0.1:8000';
+
+async function carregarHistorico() {
+    const container = document.getElementById('historicoContainer');
+    
+    try {
+        const response = await fetch(`${API_URL}/historico`);
+        const historico = await response.json();
+
+        if (historico.length === 0) {
+            container.innerHTML = '<p style="color: var(--text-muted);">Nenhum check-in registrado no histÃ³rico ainda.</p>';
+            return;
+        }
+
+        let html = `
+            <table class="historico-table">
+                <thead>
+                    <tr>
+                        <th>HÃ³spede</th>
+                        <th>Quarto</th>
+                        <th>Entrada</th>
+                        <th>SaÃ­da</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        historico.forEach(item => {
+            const dataEntrada = new Date(item.horario_entrada).toLocaleString('pt-BR');
+            const dataSaida = new Date(item.horario_saida).toLocaleString('pt-BR');
+            
+            html += `
+                <tr>
+                    <td style="font-weight: 500;">${item.nome_hospede}</td>
+                    <td>${item.numero_quarto}</td>
+                    <td>${dataEntrada}</td>
+                    <td>${dataSaida}</td>
+                </tr>
+            `;
+        });
+
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+
+    } catch (error) {
+        console.error('Erro ao buscar histÃ³rico:', error);
+        container.innerHTML = '<p style="color: red;">Erro ao conectar com a API para carregar o histÃ³rico.</p>';
+    }
+}
+
+carregarHistorico();
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-recepcao\script.js ===
+const API_URL = 'http://127.0.0.1:8000';
+
+async function carregarFila() {
+    try {
+        const response = await fetch(`${API_URL}/fila`);
+        const fila = await response.json();
+        atualizarInterface(fila);
+    } catch (error) {
+        console.error('Erro ao buscar a fila:', error);
+        mostrarToast('Erro de conexÃ£o com a API');
+    }
+}
+
+function atualizarInterface(fila) {
+    const counterNumber = document.getElementById('counterNumber');
+    const checkinContent = document.getElementById('checkinContent');
+    const emptyState = document.getElementById('emptyState');
+    const upcomingList = document.getElementById('upcomingList');
+
+    counterNumber.textContent = fila.length;
+    
+    // sequencia para a fila vazia ou com alguÃ©m e para mostrar ao lado
+    if (fila.length === 0) {
+        checkinContent.hidden = true;
+        emptyState.hidden = false;
+        upcomingList.innerHTML = '<p>Nenhum hÃ³spede aguardando.</p>';
+        return;
+    }
+
+    checkinContent.hidden = false;
+    emptyState.hidden = true;
+
+    const atual = fila[0];
+    document.getElementById('guestName').textContent = atual.nome_hospede;
+    document.getElementById('guestRoom').textContent = `Quarto ${atual.numero_quarto}`;
+    
+    const dataEntrada = new Date(atual.horario_entrada);
+    document.getElementById('guestCheckin').textContent = dataEntrada.toLocaleString('pt-BR');
+    
+    const dataSaida = new Date(atual.horario_saida);
+    document.getElementById('guestCheckout').textContent = dataSaida.toLocaleString('pt-BR');
+    
+    document.getElementById('guestAvatar').textContent = atual.nome_hospede.charAt(0).toUpperCase();
+    document.getElementById('guestPosition').textContent = '1Âº da fila';
+
+    upcomingList.innerHTML = '';
+    for (let i = 1; i < fila.length; i++) {
+        const hospede = fila[i];
+        const item = document.createElement('div');
+        item.style.padding = '10px 0';
+        item.style.borderBottom = '1px solid #ccc';
+        item.innerHTML = `<strong>${i + 1}Âº</strong> - ${hospede.nome_hospede} (Quarto ${hospede.numero_quarto})`;
+        upcomingList.appendChild(item);
+    }
+}
+
+// BotÃ£o de registrar check-in e sequencia para atender o proximo da fila
+document.getElementById('attendBtn').addEventListener('click', async () => {
+    try {
+        const response = await fetch(`${API_URL}/fila/proximo`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            Swal.fire({
+                title: 'Check-in concluÃ­do!',
+                text: 'HÃ³spede atendido com sucesso.',
+                icon: 'success',
+                timer: 2000,
+                showConfirmButton: false
+            });
+            carregarFila();
+        } else if (response.status === 404) {
+            Swal.fire({
+                title: 'Fila vazia',
+                text: 'NÃ£o hÃ¡ ninguÃ©m aguardando no momento.',
+                icon: 'info',
+                confirmButtonText: 'Entendi'
+            });
+        } else {
+            Swal.fire({
+                title: 'Erro',
+                text: 'Erro ao atender hÃ³spede.',
+                icon: 'error',
+                confirmButtonText: 'Entendi'
+            });
+        }
+    } catch (error) {
+        console.error(error);
+        Swal.fire({
+            title: 'Erro de conexÃ£o',
+            text: 'NÃ£o foi possÃ­vel conectar Ã  API.',
+            icon: 'error',
+            confirmButtonText: 'Entendi'
+        });
+    }
+});
+
+function mostrarToast(mensagem) {
+    const toast = document.getElementById('toast');
+    toast.textContent = mensagem;
+    toast.style.display = 'block';
+    setTimeout(() => { toast.style.display = 'none'; }, 3000);
+}
+
+carregarFila();
+setInterval(carregarFila, 5000);
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\checkin-recepcao\style.css ===
+:root {
+    --color-primary-100: #e0f2fe;
+    --color-primary-200: #bae6fd;
+    --color-primary-300: #7dd3fc;
+    --color-primary-600: #0284c7;
+    --color-surface: #ffffff;
+    --color-surface-alt: #f8fafc;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --bg-color: #f1f5f9;
+}
+
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg-color);
+    color: var(--text-main);
+    margin: 0;
+}
+
+/* Barra Superior */
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background: var(--color-surface);
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.topbar__brand {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.topbar__logo {
+    background: var(--color-primary-600);
+    color: white;
+    padding: 0.5rem 0.75rem;
+    border-radius: 8px;
+    font-weight: bold;
+    font-size: 1.25rem;
+}
+
+.topbar h1 { margin: 0; font-size: 1.25rem; }
+.topbar__subtitle { margin: 0; color: var(--text-muted); font-size: 0.875rem; }
+
+.topbar__counter {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+.topbar__counter-number {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--color-primary-600);
+}
+.topbar__counter-label { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;}
+
+/* Ãrea Principal */
+.stage {
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.stage__inner {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 2rem;
+}
+
+/* Card Principal de Check-in */
+.checkin-card {
+    background: var(--color-surface);
+    border-radius: 12px;
+    padding: 2.5rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+
+.checkin-card__tag {
+    display: inline-block;
+    background: var(--color-primary-100);
+    color: var(--color-primary-600);
+    padding: 0.35rem 0.85rem;
+    border-radius: 999px;
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: 2rem;
+}
+
+.checkin-card__guest {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    margin-bottom: 2.5rem;
+}
+
+.checkin-card__avatar {
+    width: 72px;
+    height: 72px;
+    background: var(--color-surface-alt);
+    border: 2px solid var(--color-primary-100);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.75rem;
+    font-weight: bold;
+    color: var(--color-primary-600);
+}
+
+.checkin-card__name { margin: 0 0 0.25rem 0; font-size: 1.75rem; }
+.checkin-card__room { margin: 0; color: var(--text-muted); font-size: 1.1rem; }
+
+/* Grid de InformaÃ§Ãµes */
+.checkin-card__grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 2.5rem;
+}
+
+.checkin-card__grid dt {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-bottom: 0.35rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.checkin-card__grid dd { margin: 0; font-weight: 600; font-size: 1.1rem; }
+
+/* BotÃ£o de Atender */
+.btn-attend {
+    width: 100%;
+    padding: 1.25rem;
+    background: var(--color-primary-600);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1.1rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.btn-attend:hover { background: #0369a1; }
+
+/* Estado Vazio */
+.empty-state { text-align: center; padding: 4rem 2rem; }
+.empty-state h3 { margin-top: 1.5rem; color: var(--text-main); }
+.empty-state p { color: var(--text-muted); }
+
+/* Coluna Lateral */
+.upcoming {
+    background: var(--color-surface);
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+
+.upcoming__title {
+    margin: 0 0 1.5rem 0;
+    font-size: 1.125rem;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 1rem;
+}
+
+.upcoming__list { font-size: 0.95rem; }
+.upcoming__list p { color: var(--text-muted); text-align: center; }
+
+/* Mensagens de NotificaÃ§Ã£o (Toast) */
+.toast {
+    display: none;
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    background: #1e293b;
+    color: white;
+    padding: 1rem 2rem;
+    border-radius: 8px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    z-index: 1000;
+}
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-app\cadastro.html ===
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cadastro - Hotel CheckQ</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>Novo Cadastro</h1>
+            <p>Preencha os dados para criar sua conta.</p>
+        </header>
+
+        <form id="cadastroForm">
+            <div class="input-group">
+                <label for="nome">Nome Completo</label>
+                <input type="text" id="nome" required>
+            </div>
+
+            <div class="input-group">
+                <label for="cpf">CPF</label>
+                <input type="text" id="cpf" required placeholder="Apenas nÃºmeros">
+            </div>
+
+            <div class="input-group">
+                <label for="email">E-mail</label>
+                <input type="email" id="email" required>
+            </div>
+
+            <div class="input-group">
+                <label for="telefone">Telefone</label>
+                <input type="tel" id="telefone" required>
+            </div>
+
+            <div class="input-group">
+                <label for="data_nascimento">Data de Nascimento</label>
+                <input type="date" id="data_nascimento" required>
+            </div>
+
+            <div class="input-group">
+                <label for="senha">Crie uma Senha</label>
+                <input type="password" id="senha" required>
+            </div>
+
+            <button type="submit" id="submitBtn">Criar Conta</button>
+            <p style="text-align: center; margin-top: 1.5rem; font-size: 0.9rem;">
+                JÃ¡ tem uma conta? <a href="login.html" style="color: var(--color-primary-600); font-weight: 600; text-decoration: none;">Voltar ao Login</a>
+            </p>
+        </form>
+        <div id="mensagemFeedback" style="margin-top: 1rem; text-align: center; font-weight: 500; font-size: 0.9rem;"></div>
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="cadastro.js"></script>
+</body>
+</html>
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-app\cadastro.js ===
+
+const API_URL = 'http://127.0.0.1:8000';
+
+document.getElementById('cadastroForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const btn = document.getElementById('submitBtn');
+
+    btn.disabled = true;
+    btn.textContent = 'Cadastrando...';
+
+    const payload = {
+        nome: document.getElementById('nome').value.trim(),
+        cpf: document.getElementById('cpf').value.trim(),
+        email: document.getElementById('email').value.trim(),
+        telefone: document.getElementById('telefone').value.trim(),
+        data_nascimento:
+            document.getElementById('data_nascimento').value + 'T00:00:00',
+        senha: document.getElementById('senha').value
+    };
+
+    // SweetAlert de carregamento
+    Swal.fire({
+        title: 'Criando sua conta...',
+        text: 'Aguarde enquanto seus dados sÃ£o cadastrados.',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => {
+            Swal.showLoading();
+        }
+    });
+
+    try {
+        const response = await fetch(`${API_URL}/usuarios`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.ok) {
+
+            await Swal.fire({
+                icon: 'success',
+                title: 'Cadastro realizado!',
+                text: 'Sua conta foi criada com sucesso.',
+                confirmButtonText: 'Ir para o login'
+            });
+
+            // Redireciona para o login
+            window.location.href = 'login.html';
+
+        } else {
+
+            let mensagemErro = 'Erro ao realizar cadastro.';
+
+            try {
+                const erro = await response.json();
+
+                if (erro.detail) {
+                    mensagemErro = erro.detail;
+                }
+            } catch {
+                // MantÃ©m a mensagem padrÃ£o
+            }
+
+            await Swal.fire({
+                icon: 'error',
+                title: 'NÃ£o foi possÃ­vel cadastrar',
+                text: mensagemErro,
+                confirmButtonText: 'Tentar novamente'
+            });
+        }
+
+    } catch (error) {
+
+        console.error('Erro no cadastro:', error);
+
+        await Swal.fire({
+            icon: 'error',
+            title: 'Erro de conexÃ£o',
+            text: 'NÃ£o foi possÃ­vel conectar ao servidor da API.',
+            confirmButtonText: 'OK'
+        });
+
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Criar Conta';
+    }
+});
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-app\login.html ===
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Portal de Acesso - Hotel CheckQ</title>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <main class="container">
+
+        <header>
+            <h1>Portal do Hotel</h1>
+            <p>Entre com sua conta para acessar o sistema.</p>
+        </header>
+
+        <form id="loginForm">
+
+            <div class="input-group">
+                <label for="identificacao">E-mail</label>
+
+                <input
+                    type="email"
+                    id="identificacao"
+                    name="identificacao"
+                    required
+                    placeholder="exemplo@email.com"
+                    autocomplete="email"
+                >
+            </div>
+
+            <div class="input-group">
+                <label for="senha">Senha</label>
+
+                <input
+                    type="password"
+                    id="senha"
+                    name="senha"
+                    required
+                    autocomplete="current-password"
+                >
+            </div>
+
+            <button type="submit" id="submitBtn">
+                Entrar no Sistema
+            </button>
+
+            <p style="text-align: center; margin-top: 1.5rem; font-size: 0.9rem;">
+                Ainda nÃ£o tem conta?
+                <a
+                    href="cadastro.html"
+                    style="color: var(--color-primary-600); font-weight: 600; text-decoration: none;"
+                >
+                    Cadastre-se aqui
+                </a>
+            </p>
+
+        </form>
+
+        <div
+            id="mensagemFeedback"
+            style="margin-top: 1.5rem; text-align: center; font-weight: 500; font-size: 0.9rem;"
+        ></div>
+
+    </main>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="script.js"></script>
+
+</body>
+</html>
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-app\script.js ===
+const API_URL = 'http://127.0.0.1:8000';
+
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const email = document.getElementById('identificacao').value.trim();
+    const senha = document.getElementById('senha').value;
+    const btn = document.getElementById('submitBtn');
+
+    if (!email || !senha) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Campos obrigatÃ³rios',
+            text: 'Preencha o e-mail e a senha.',
+            confirmButtonText: 'OK'
+        });
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Autenticando...';
+
+    // Alerta de carregamento
+    Swal.fire({
+        title: 'Entrando...',
+        text: 'Verificando suas credenciais.',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => {
+            Swal.showLoading();
+        }
+    });
+
+    try {
+        const response = await fetch(`${API_URL}/auth/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                email: email,
+                senha: senha
+            })
+        });
+
+        const dados = await response.json();
+
+        if (response.ok) {
+
+            localStorage.setItem('hospede_logado', dados.nome);
+            localStorage.setItem('token', dados.token);
+
+            await Swal.fire({
+                icon: 'success',
+                title: 'Login realizado!',
+                text: `Bem-vindo, ${dados.nome}!`,
+                confirmButtonText: 'Continuar',
+                timer: 2000,
+                timerProgressBar: true
+            });
+
+            window.location.href = '../checkin-app/index.html';
+
+        } else {
+
+            Swal.fire({
+                icon: 'error',
+                title: 'Falha no login',
+                text: dados.detail || 'E-mail ou senha incorretos.',
+                confirmButtonText: 'Tentar novamente'
+            });
+        }
+
+    } catch (error) {
+
+        console.error('Erro no login:', error);
+
+        Swal.fire({
+            icon: 'error',
+            title: 'Erro de conexÃ£o',
+            text: 'NÃ£o foi possÃ­vel conectar ao servidor da API.',
+            confirmButtonText: 'OK'
+        });
+
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Entrar no Sistema';
+    }
+});
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-app\style.css ===
+:root {
+    --primary: #0284c7;
+    --primary-hover: #0369a1;
+    --bg-color: #f1f5f9;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+}
+
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-color);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.container {
+    background: white;
+    padding: 2.5rem;
+    border-radius: 12px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 400px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    margin: 0 0 0.5rem 0;
+    color: var(--text-main);
+    font-size: 1.5rem;
+}
+
+header p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.input-group {
+    margin-bottom: 1.25rem;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #334155;
+    font-size: 0.9rem;
+}
+
+.input-group input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-family: inherit;
+    font-size: 1rem;
+    transition: border-color 0.2s;
+}
+
+.input-group input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.1);
+}
+
+button {
+    width: 100%;
+    padding: 0.875rem;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-top: 1rem;
+}
+
+button:hover {
+    background: var(--primary-hover);
+}
+
+button:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+}
+
+#mensagemFeedback {
+    margin-top: 1.5rem;
+    text-align: center;
+    font-weight: 500;
+    font-size: 0.9rem;
+    min-height: 20px;
+}
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-recepcao\admin.js ===
+const API_URL = 'http://127.0.0.1:8000';
+
+document.getElementById('adminLoginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const usuario = document.getElementById('usuario').value.trim();
+    const senha = document.getElementById('senha').value;
+    const btn = document.getElementById('submitBtn');
+
+    btn.disabled = true;
+    btn.textContent = 'Autenticando...';
+
+    // SweetAlert de carregamento
+    Swal.fire({
+        title: 'Autenticando...',
+        text: 'Verificando suas credenciais.',
+        allowOutsideClick: false,
+        allowEscapeKey: false,
+        didOpen: () => {
+            Swal.showLoading();
+        }
+    });
+
+    try {
+        const response = await fetch(`${API_URL}/admin/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                username: usuario,
+                password: senha
+            })
+        });
+
+        if (response.ok) {
+
+            // SweetAlert de sucesso
+            await Swal.fire({
+                icon: 'success',
+                title: 'Login realizado!',
+                text: 'Acesso Ã  recepÃ§Ã£o autorizado.',
+                confirmButtonText: 'Continuar',
+                timer: 2000,
+                timerProgressBar: true
+            });
+
+            localStorage.setItem('admin_logado', 'true');
+
+            window.location.href =
+                '../checkin-recepcao/checkin_recepcao.html';
+
+        } else {
+
+            let mensagemErro = 'UsuÃ¡rio ou senha incorretos.';
+
+            try {
+                const dados = await response.json();
+
+                if (dados.detail) {
+                    mensagemErro = dados.detail;
+                }
+            } catch {
+                // MantÃ©m a mensagem padrÃ£o caso a API nÃ£o retorne JSON
+            }
+
+            // SweetAlert de erro de autenticaÃ§Ã£o
+            await Swal.fire({
+                icon: 'error',
+                title: 'Falha no login',
+                text: mensagemErro,
+                confirmButtonText: 'Tentar novamente'
+            });
+        }
+
+    } catch (error) {
+
+        console.error('Erro no login:', error);
+
+        // SweetAlert de erro de conexÃ£o
+        await Swal.fire({
+            icon: 'error',
+            title: 'Erro de conexÃ£o',
+            text: 'NÃ£o foi possÃ­vel conectar ao servidor da API.',
+            confirmButtonText: 'OK'
+        });
+
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+    }
+});
+
+
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-recepcao\login_admin.html ===
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Acesso Administrativo - Hotel CheckQ</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="container">
+        <header>
+            <h1>Acesso Administrativo</h1>
+            <p>Ãrea restrita Ã  equipe do hotel.</p>
+        </header>
+
+        <form id="adminLoginForm">
+            <div class="input-group">
+                <label for="usuario">UsuÃ¡rio</label>
+                <input type="text" id="usuario" name="usuario" required autocomplete="username">
+            </div>
+
+            <div class="input-group">
+                <label for="senha">Senha</label>
+                <input type="password" id="senha" name="senha" required autocomplete="current-password">
+            </div>
+
+            <button type="submit" id="submitBtn">Entrar</button>
+        </form>
+        <div id="mensagemFeedback" style="margin-top: 1.5rem; text-align: center; font-weight: 500; font-size: 0.9rem;"></div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="admin.js"></script>
+</body>
+</html>
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\frontend\login-recepcao\style.css ===
+:root {
+    --primary: #0284c7;
+    --primary-hover: #0369a1;
+    --bg-color: #f1f5f9;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+}
+
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background-color: var(--bg-color);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.container {
+    background: white;
+    padding: 2.5rem;
+    border-radius: 12px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 400px;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    margin: 0 0 0.5rem 0;
+    color: var(--text-main);
+    font-size: 1.5rem;
+}
+
+header p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.input-group {
+    margin-bottom: 1.25rem;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #334155;
+    font-size: 0.9rem;
+}
+
+.input-group input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-family: inherit;
+    font-size: 1rem;
+    transition: border-color 0.2s;
+}
+
+.input-group input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.1);
+}
+
+button {
+    width: 100%;
+    padding: 0.875rem;
+    background: var(--primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-top: 1rem;
+}
+
+button:hover {
+    background: var(--primary-hover);
+}
+
+button:disabled {
+    background: #94a3b8;
+    cursor: not-allowed;
+}
+
+#mensagemFeedback {
+    margin-top: 1.5rem;
+    text-align: center;
+    font-weight: 500;
+    font-size: 0.9rem;
+    min-height: 20px;
+}
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\README.md ===
+# ðŸ¨ Hotel CheckQ
+
+> **Sistema inteligente de gerenciamento de check-ins e filas de atendimento para hotÃ©is.**
+
+> [!IMPORTANT]
+> ðŸŽ“ **Projeto Estritamente AcadÃªmico**: Este software foi desenvolvido exclusivamente para fins didÃ¡ticos, educacionais e avaliativos. **Ele nÃ£o foi projetado para ambientes comerciais e NÃƒO entrarÃ¡ em produÃ§Ã£o.**
+
+O **Hotel CheckQ** Ã© uma soluÃ§Ã£o acadÃªmica desenvolvida para simular, modernizar e organizar o fluxo de entrada e atendimento de hÃ³spedes em redes hoteleiras. O sistema oferece fluxos segregados para autoatendimento do hÃ³spede e operaÃ§Ã£o da recepÃ§Ã£o, contando com controle de fila FIFO em tempo real, validaÃ§Ã£o de ocupaÃ§Ã£o de quartos, expiraÃ§Ã£o automÃ¡tica de diÃ¡rias, histÃ³rico permanente e autenticaÃ§Ã£o segura com bcrypt.
+
+---
+
+## ðŸ“Œ Ãndice
+
+- [Aviso AcadÃªmico](#-aviso-acadÃªmico)
+- [VisÃ£o Geral](#-visÃ£o-geral)
+- [Funcionalidades Principais](#-funcionalidades-principais)
+- [Fluxo de Funcionamento](#-fluxo-de-funcionamento)
+- [Arquitetura do Projeto](#-arquitetura-do-projeto)
+- [Estrutura de Pastas](#-estrutura-de-pastas)
+- [Tecnologias Utilizadas](#-tecnologias-utilizadas)
+- [Endpoints da API](#-endpoints-da-api)
+- [Regras de NegÃ³cio](#-regras-de-negÃ³cio)
+- [Como Executar o Projeto](#-como-executar-o-projeto)
+  - [PrÃ©-requisitos](#prÃ©-requisitos)
+  - [1. Clonar o RepositÃ³rio](#1-clonar-o-repositÃ³rio)
+  - [2. Configurar o Backend](#2-configurar-o-backend)
+  - [3. VariÃ¡veis de Ambiente](#3-variÃ¡veis-de-ambiente)
+  - [4. Iniciar o Servidor](#4-iniciar-o-servidor)
+  - [5. Acessar o Frontend](#5-acessar-o-frontend)
+- [DocumentaÃ§Ã£o Interativa (Swagger/OpenAPI)](#-documentaÃ§Ã£o-interativa-swaggeropenapi)
+- [PropÃ³sito e Natureza do Projeto](#-propÃ³sito-e-natureza-do-projeto)
+
+---
+
+## ï¿½ Aviso AcadÃªmico
+
+Este software foi concebido como um trabalho prÃ¡tico de disciplina universitÃ¡ria com o propÃ³sito de exercitar conceitos fundamentais da engenharia de software e desenvolvimento fullstack.
+
+- **NÃ£o entrarÃ¡ em produÃ§Ã£o:** Trata-se de um protÃ³tipo de testes e aprendizado.
+- **SeguranÃ§a e Conformidade:** NÃ£o possui certificaÃ§Ãµes de seguranÃ§a comercial, homologaÃ§Ã£o para conformidade com a LGPD/GDPR nem infraestrutura para transaÃ§Ãµes financeiras reais.
+
+---
+
+## ï¿½ðŸŒŸ VisÃ£o Geral
+
+O projeto Ã© dividido em **duas jornadas independentes e integradas**:
+
+1. **Jornada do HÃ³spede**:
+   - **Portal de Acesso (`frontend/login-app/`)**: Permite que novos hÃ³spedes se cadastrem (com validaÃ§Ã£o de idade mÃ­nima de 18 anos) e realizem login.
+   - **Portal do HÃ³spede (`frontend/checkin-app/`)**: Ambiente do hÃ³spede logado para solicitar entrada na fila informando o quarto e perÃ­odo de estadia, alÃ©m de botÃ£o para logout seguro.
+
+2. **Jornada da RecepÃ§Ã£o & AdministraÃ§Ã£o**:
+   - **Portal Administrativo (`frontend/login-recepcao/`)**: Tela exclusiva para a equipe da recepÃ§Ã£o se autenticar utilizando as credenciais do usuÃ¡rio global configurado no `.env`.
+   - **Painel Operacional (`frontend/checkin-recepcao/`)**: Interface em tempo real que monitora a fila de espera (polling a cada 5s), destaca o prÃ³ximo da fila para atendimento/check-in, e disponibiliza o histÃ³rico consolidado de atendimentos.
+
+---
+
+## âœ¨ Funcionalidades Principais
+
+### ðŸ‘¤ Ãrea do HÃ³spede (`login-app` & `checkin-app`)
+- **Cadastro Completo**: ValidaÃ§Ãµes de nome, CPF, e-mail, telefone, data de nascimento e senha criptografada.
+- **AutenticaÃ§Ã£o Segura**: GeraÃ§Ã£o de tokens de sessÃ£o temporÃ¡rios (2 horas de validade) via endpoint `/auth/login`.
+- **SolicitaÃ§Ã£o de Check-in**: InclusÃ£o na fila informando o quarto desejado e datas/horÃ¡rios de entrada e saÃ­da.
+- **ValidaÃ§Ãµes com SweetAlert2**: Feedbacks visuais modernos para carregamento (`Swal.showLoading()`), sucesso, erros de conexÃ£o e quarto ocupado.
+- **Logout Seguro**: Modal de confirmaÃ§Ã£o antes de deslogar e limpar o `localStorage`.
+
+### ðŸ›Žï¸ Ãrea da RecepÃ§Ã£o (`login-recepcao` & `checkin-recepcao`)
+- **Acesso Administrativo Dedicado**: AutenticaÃ§Ã£o restrita via `/admin/login`, isolada do portal dos hÃ³spedes.
+- **Fila em Tempo Real**: AtualizaÃ§Ã£o automÃ¡tica a cada 5 segundos exibindo contador de hÃ³spedes na fila.
+- **Atendimento FIFO (First-In, First-Out)**: Destaque do prÃ³ximo hÃ³spede com nome, quarto, datas de estadia e avatar dinÃ¢mico.
+- **Atender PrÃ³ximo**: Ao clicar em "Registrar check-in", o hÃ³spede Ã© removido da fila ativa e registrado automaticamente no histÃ³rico.
+- **ExpiraÃ§Ã£o AutomÃ¡tica de Estadias**: LiberaÃ§Ã£o automÃ¡tica de quartos cujo horÃ¡rio de saÃ­da jÃ¡ foi ultrapassado.
+- **HistÃ³rico Completo**: VisualizaÃ§Ã£o em tabela de todos os check-ins finalizados com navegaÃ§Ã£o direta de volta para a fila.
+
+---
+
+## ðŸ”„ Fluxo de Funcionamento
+
+```mermaid
+flowchart TD
+    subgraph Portal do HÃ³spede
+        H1[Acessa login-app/login.html] --> H2{Possui Conta?}
+        H2 -- NÃ£o --> H3[Acessa cadastro.html]
+        H3 --> H4[ValidaÃ§Ã£o: +18 anos, CPF e Email Ãºnicos]
+        H4 --> H1
+        H2 -- Sim --> H5[Login: /auth/login]
+        H5 --> H6[Redireciona para checkin-app/index.html]
+        H6 --> H7[Solicita Check-in: Quarto e Datas]
+        H7 --> H8{Quarto Livre e Datas VÃ¡lidas?}
+        H8 -- NÃ£o --> H9[Alerta SweetAlert: Erro / Ocupado]
+        H8 -- Sim --> H10[Entra na Fila FIFO de Espera]
+    end
+
+    subgraph Portal da RecepÃ§Ã£o
+        R1[Acessa login-recepcao/login_admin.html] --> R2[Login Admin: /admin/login]
+        R2 --> R3[Redireciona para checkin-recepcao/checkin_recepcao.html]
+        H10 -. Fila Atualizada em Tempo Real .-> R4[Visualiza PrÃ³ximo HÃ³spede da Fila]
+        R3 --> R4
+        R4 --> R5[Clica em 'Registrar check-in']
+        R5 --> R6[DELETE /fila/proximo: Move para HistÃ³rico]
+        R6 --> R7[Consulta HistÃ³rico em historico.html]
+    end
+```
+
+---
+
+## ðŸ› Arquitetura do Projeto
+
+O backend adota o padrÃ£o em **Camadas (Layered Architecture)**, garantindo desacoplamento, testabilidade e manutenibilidade:
+
+```
+FastAPI Router (routes/)
+       â”‚
+       â–¼
+Service Layer (services/)        <-- Regras de negÃ³cio, validaÃ§Ãµes e cÃ¡lculo de expiraÃ§Ã£o
+       â”‚
+       â–¼
+Repository Layer (repository/)    <-- Acesso ao banco de dados, queries e transaÃ§Ãµes
+       â”‚
+       â–¼
+Domain & ORM (domain/)           <-- Modelos SQLAlchemy e SQLite Engine
+```
+
+- **Domain (`domain/`)**: Entidades e mapeamentos relacionais (`Checkin`, `HistoricoCheckin`, `Usuario`, `UsuarioGlobal`, `Base`).
+- **Repository (`repository/`)**: MÃ©todos de persistÃªncia e isolamento do SQLAlchemy (`CheckinRepository`, `HistoricoCheckinRepository`, `UsuarioRepository`, `UsuarioGlobalRepository`).
+- **Services (`services/`)**: Regras de negÃ³cio como verificaÃ§Ã£o de ocupaÃ§Ã£o, limite de quartos, cÃ¡lculo de idade, hashing de senha e expiraÃ§Ã£o automÃ¡tica.
+- **Routes (`routes/`)**: Endpoints HTTP com validaÃ§Ã£o de schemas Pydantic e tratamento de exceÃ§Ãµes de domÃ­nio.
+- **Security (`security/`)**: FunÃ§Ãµes de hash e verificaÃ§Ã£o de senhas baseadas em **Bcrypt** via Passlib.
+- **Lifespan (`main.py`)**: InicializaÃ§Ã£o assÃ­ncrona do FastAPI que assegura a criaÃ§Ã£o do usuÃ¡rio administrador global padrÃ£o com base nas variÃ¡veis do arquivo `.env`.
+
+---
+
+## ðŸ“ Estrutura de Pastas
+
+```text
+hotel-CheckQ/
+â”‚
+â”œâ”€â”€ backend/
+â”‚   â”œâ”€â”€ data/
+â”‚   â”‚   â””â”€â”€ checkin.db                 # Banco de dados local SQLite (gerado automaticamente)
+â”‚   â”œâ”€â”€ domain/
+â”‚   â”‚   â”œâ”€â”€ base.py                    # Engine do SQLAlchemy e classe Base declarativa
+â”‚   â”‚   â”œâ”€â”€ checkin.py                 # Modelo da fila de check-ins ativos
+â”‚   â”‚   â”œâ”€â”€ historico_checkin.py       # Modelo de registros de check-ins finalizados
+â”‚   â”‚   â”œâ”€â”€ usuario.py                 # Modelo de hÃ³spedes cadastrados
+â”‚   â”‚   â””â”€â”€ usuario_global.py          # Modelo de administrador da recepÃ§Ã£o
+â”‚   â”œâ”€â”€ repository/
+â”‚   â”‚   â”œâ”€â”€ checkin_repository.py      # PersistÃªncia da fila, atendimento e checkout
+â”‚   â”‚   â”œâ”€â”€ historico_chekin_repository.py # Consultas ao histÃ³rico de atendimentos
+â”‚   â”‚   â”œâ”€â”€ usuario_repository.py      # CRUD de hÃ³spedes no banco
+â”‚   â”‚   â””â”€â”€ usuario_global_repository.py # PersistÃªncia do usuÃ¡rio administrativo
+â”‚   â”œâ”€â”€ routes/
+â”‚   â”‚   â”œâ”€â”€ auth_routes.py             # Login de hÃ³spedes (/auth/login) e admin (/admin/login)
+â”‚   â”‚   â”œâ”€â”€ checkin_routes.py          # Gerenciamento da fila (/fila e /fila/proximo)
+â”‚   â”‚   â”œâ”€â”€ historico_chekin_routes.py # Consulta ao histÃ³rico (/historico)
+â”‚   â”‚   â”œâ”€â”€ usuario_global_routes.py   # VerificaÃ§Ã£o do admin (/admin/user)
+â”‚   â”‚   â””â”€â”€ usuarios_routes.py         # Cadastro e listagem de hÃ³spedes (/usuarios)
+â”‚   â”œâ”€â”€ security/
+â”‚   â”‚   â””â”€â”€ senha.py                   # Criptografia de senhas com bcrypt
+â”‚   â”œâ”€â”€ services/
+â”‚   â”‚   â”œâ”€â”€ auth_service.py            # ValidaÃ§Ã£o de credenciais e tokens de sessÃ£o
+â”‚   â”‚   â”œâ”€â”€ checkin_service.py         # Regras de quartos, validaÃ§Ã£o de datas e fila
+â”‚   â”‚   â”œâ”€â”€ historico_chekin_service.py# LÃ³gica do histÃ³rico de atendimentos
+â”‚   â”‚   â”œâ”€â”€ usuario_service.py         # Regras de cadastro, idade mÃ­nima e busca
+â”‚   â”‚   â””â”€â”€ usuario_global_service.py  # Provisionamento automÃ¡tico do admin via .env
+â”‚   â””â”€â”€ main.py                        # InstÃ¢ncia do FastAPI, CORS e Lifespan
+â”‚
+â”œâ”€â”€ frontend/
+â”‚   â”œâ”€â”€ login-app/                     # [HÃ³spede] Portal de AutenticaÃ§Ã£o e Cadastro
+â”‚   â”‚   â”œâ”€â”€ login.html                 # Tela de login do hÃ³spede
+â”‚   â”‚   â”œâ”€â”€ cadastro.html              # Tela de cadastro de novos hÃ³spedes
+â”‚   â”‚   â”œâ”€â”€ script.js                  # IntegraÃ§Ã£o de login do hÃ³spede com /auth/login
+â”‚   â”‚   â”œâ”€â”€ cadastro.js                # ValidaÃ§Ãµes e envio do cadastro para /usuarios
+â”‚   â”‚   â””â”€â”€ style.css                  # Estilos visuais do portal do hÃ³spede
+â”‚   â”‚
+â”‚   â”œâ”€â”€ login-recepcao/                # [RecepÃ§Ã£o] Portal de Acesso Administrativo
+â”‚   â”‚   â”œâ”€â”€ login_admin.html           # Tela de login da equipe da recepÃ§Ã£o
+â”‚   â”‚   â”œâ”€â”€ admin.js                   # IntegraÃ§Ã£o do login administrativo com /admin/login
+â”‚   â”‚   â””â”€â”€ style.css                  # Estilos dedicados ao login administrativo
+â”‚   â”‚
+â”‚   â”œâ”€â”€ checkin-app/                   # [HÃ³spede] Painel de SolicitaÃ§Ã£o de Check-in
+â”‚   â”‚   â”œâ”€â”€ index.html                 # Boas-vindas, formulÃ¡rio de check-in e logout
+â”‚   â”‚   â”œâ”€â”€ script.js                  # SubmissÃ£o de check-in e alertas SweetAlert2
+â”‚   â”‚   â””â”€â”€ style.css                  # Estilos do autoatendimento do hÃ³spede
+â”‚   â”‚
+â”‚   â””â”€â”€ checkin-recepcao/              # [RecepÃ§Ã£o] Painel Operacional e HistÃ³rico
+â”‚       â”œâ”€â”€ checkin_recepcao.html      # Painel da fila em tempo real e atendimento
+â”‚       â”œâ”€â”€ script.js                  # Polling da fila (5s) e atendimento de hÃ³spedes
+â”‚       â”œâ”€â”€ historico.html             # Tabela de check-ins jÃ¡ concluÃ­dos
+â”‚       â”œâ”€â”€ historico.js               # Carregamento assÃ­ncrono do histÃ³rico
+â”‚       â””â”€â”€ style.css                  # Estilos do painel operacional
+â”‚
+â”œâ”€â”€ .env                               # VariÃ¡veis de ambiente locais (nÃ£o versionar)
+â”œâ”€â”€ .gitignore                         # ConfiguraÃ§Ã£o de arquivos ignorados pelo Git
+â”œâ”€â”€ requirements.txt                   # DependÃªncias do ecossistema Python
+â””â”€â”€ README.md                          # DocumentaÃ§Ã£o tÃ©cnica e acadÃªmica do projeto
+```
+
+---
+
+## ðŸ›  Tecnologias Utilizadas
+
+### Backend
+- **Python 3.10+ / 3.14**
+- **[FastAPI](https://fastapi.tiangolo.com/)**: Framework web moderno, assÃ­ncrono e de alto desempenho.
+- **[Uvicorn](https://www.uvicorn.org/)**: Servidor ASGI leve e veloz.
+- **[SQLAlchemy 2.0](https://www.sqlalchemy.org/)**: ORM declarativo com suporte a tipos e sessÃµes gerenciadas.
+- **[SQLite](https://www.sqlite.org/)**: Banco de dados relacional embutido em arquivo (`data/checkin.db`).
+- **[Pydantic v2](https://docs.pydantic.dev/)**: ValidaÃ§Ã£o e serializaÃ§Ã£o de dados via schemas tipados.
+- **[Passlib & Bcrypt](https://passlib.readthedocs.io/)**: Hashing unidirecional e verificaÃ§Ã£o segura de senhas.
+- **[python-dotenv](https://github.com/theskumar/python-dotenv)**: Gerenciamento seguro de configuraÃ§Ãµes via arquivo `.env`.
+
+### Frontend
+- **HTML5 SemÃ¢ntico**: Estrutura acessÃ­vel e semÃ¢ntica.
+- **CSS3 Moderno**: Custom Properties (variÃ¡veis CSS), Flexbox e CSS Grid responsivo.
+- **JavaScript Vanilla (ES6+)**: FunÃ§Ãµes assÃ­ncronas (`async/await`), Fetch API, manipulaÃ§Ã£o dinÃ¢mica do DOM e persistÃªncia em `localStorage`.
+- **[SweetAlert2](https://sweetalert2.github.io/)**: Biblioteca para popups, modais de confirmaÃ§Ã£o e alertas de carregamento interativos.
+
+---
+
+## ðŸ”Œ Endpoints da API
+
+### 1. Fila de Check-in (`/fila`)
+| MÃ©todo | Rota | DescriÃ§Ã£o | Status de Sucesso |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/fila` | Solicita inclusÃ£o na fila de check-in | `200 OK` |
+| `GET` | `/fila` | Retorna todos os hÃ³spedes aguardando atendimento | `200 OK` |
+| `DELETE` | `/fila/proximo` | Atende o prÃ³ximo hÃ³spede da fila e o move para o histÃ³rico | `200 OK` |
+
+#### Payload de Exemplo - `POST /fila`:
+```json
+{
+  "nome_hospede": "Maria Silva",
+  "numero_quarto": 102,
+  "horario_entrada": "2026-10-01T14:00:00",
+  "horario_saida": "2026-10-05T12:00:00"
+}
+```
+
+---
+
+### 2. HistÃ³rico de Atendimentos (`/historico`)
+| MÃ©todo | Rota | DescriÃ§Ã£o | Status de Sucesso |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/historico` | Retorna todos os registros de check-ins jÃ¡ atendidos | `200 OK` |
+
+---
+
+### 3. GestÃ£o de HÃ³spedes (`/usuarios`)
+| MÃ©todo | Rota | DescriÃ§Ã£o | Status de Sucesso |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/usuarios` | Lista todos os usuÃ¡rios cadastrados | `200 OK` |
+| `POST` | `/usuarios` | Cadastra um novo hÃ³spede (valida idade mÃ­nima de 18 anos) | `200 OK` |
+| `GET` | `/usuarios/{usuario_id}` | ObtÃ©m dados de um hÃ³spede especÃ­fico | `200 OK` |
+| `DELETE` | `/usuarios/{usuario_id}`| Remove o cadastro de um hÃ³spede | `200 OK` |
+
+#### Payload de Exemplo - `POST /usuarios`:
+```json
+{
+  "nome": "Carlos Drummond",
+  "cpf": "111.222.333-44",
+  "email": "carlos@email.com",
+  "senha": "senhaSegura123",
+  "telefone": "(11) 99999-8888",
+  "data_nascimento": "1995-03-15T00:00:00"
+}
+```
+
+---
+
+### 4. AutenticaÃ§Ã£o e Acesso (`/auth` e `/admin`)
+| MÃ©todo | Rota | DescriÃ§Ã£o | Status de Sucesso |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/auth/login` | Autentica o hÃ³spede e retorna token de sessÃ£o | `200 OK` |
+| `POST` | `/admin/login` | Autentica o usuÃ¡rio da recepÃ§Ã£o / administrador | `200 OK` |
+| `GET` | `/admin/user` | Verifica se o administrador global foi provisionado | `200 OK` |
+
+---
+
+## ðŸ“‹ Regras de NegÃ³cio
+
+1. **Faixa VÃ¡lida de Quartos**: O hotel possui quartos numerados de **1 a 100**. NÃºmeros fora deste intervalo disparam `NumeroQuartoInvalidoError` (HTTP 400).
+2. **Quarto JÃ¡ Ocupado**: Impede que dois check-ins simultÃ¢neos ocupem o mesmo quarto (`QuartoJaOcupadoError` â€” HTTP 409).
+3. **ConsistÃªncia CronolÃ³gica**:
+   - A data de check-in nÃ£o pode estar no passado.
+   - A data de saÃ­da deve ser estritamente posterior Ã  de entrada.
+4. **Checkout AutomÃ¡tico**: Sempre que a fila Ã© consultada ou alterada, check-ins com horÃ¡rio de saÃ­da ultrapassado sÃ£o arquivados no histÃ³rico e o quarto Ã© desocupado automaticamente.
+5. **Maioridade ObrigatÃ³ria**: O cliente deve ter no mÃ­nimo 18 anos completos no momento do cadastro (`MenorDeIdadeError` â€” HTTP 400).
+6. **Unicidade Cadastral**: NÃ£o Ã© permitido cadastrar CPFs ou e-mails jÃ¡ existentes no banco (`UsuarioJaExisteError` â€” HTTP 400).
+7. **CriaÃ§Ã£o do Admin no Startup**: No evento `lifespan` do FastAPI, se o usuÃ¡rio administrativo global nÃ£o existir no banco, ele Ã© criado automaticamente a partir das credenciais do `.env`.
+
+---
+
+## ðŸš€ Como Executar o Projeto
+
+### PrÃ©-requisitos
+- **Python** (versÃ£o 3.10 ou superior instalada).
+- **Pip** (gerenciador de pacotes do Python).
+- Navegador web moderno (Chrome, Firefox, Edge, Brave).
+- Recomendado: ExtensÃ£o **Live Server** no VS Code para servir os mÃ³dulos frontend.
+
+---
+
+### 1. Clonar o RepositÃ³rio
+```bash
+git clone https://github.com/jcdev01/hotel-CheckQ.git
+cd hotel-CheckQ
+```
+
+---
+
+### 2. Configurar o Backend
+Crie e ative um ambiente virtual:
+
+**No Windows (PowerShell):**
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+**No Linux / macOS:**
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+Instale as dependÃªncias:
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### 3. VariÃ¡veis de Ambiente
+Crie um arquivo `.env` na raiz do projeto (mesma pasta deste `README.md`) definindo o usuÃ¡rio e a senha da recepÃ§Ã£o:
+
+```env
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123
+```
+
+---
+
+### 4. Iniciar o Servidor FastAPI
+Entre na pasta `backend` e inicialize o servidor com recarregamento automÃ¡tico:
+
+```bash
+cd backend
+uvicorn main:app --reload
+```
+
+A API estarÃ¡ acessÃ­vel em: **`http://127.0.0.1:8000`**
+
+---
+
+### 5. Acessar o Frontend
+VocÃª pode utilizar a extensÃ£o **Live Server** do VS Code ou abrir os arquivos `.html` diretamente no navegador:
+
+| MÃ³dulo | Arquivo Principal | DescriÃ§Ã£o |
+| :--- | :--- | :--- |
+| **Portal do HÃ³spede** | `frontend/login-app/login.html` | Login dos hÃ³spedes |
+| **Cadastro de HÃ³spedes** | `frontend/login-app/cadastro.html` | Registro de novos clientes |
+| **Painel do HÃ³spede** | `frontend/checkin-app/index.html` | SolicitaÃ§Ã£o de check-in e entrada na fila |
+| **Login da RecepÃ§Ã£o** | `frontend/login-recepcao/login_admin.html` | Acesso exclusivo da equipe do hotel |
+| **Painel da RecepÃ§Ã£o** | `frontend/checkin-recepcao/checkin_recepcao.html`| Fila em tempo real e atendimento |
+| **HistÃ³rico** | `frontend/checkin-recepcao/historico.html` | RelatÃ³rio de check-ins jÃ¡ concluÃ­dos |
+
+---
+
+## ðŸ“– DocumentaÃ§Ã£o Interativa (Swagger/OpenAPI)
+
+Com o servidor rodando, acesse a documentaÃ§Ã£o interativa gerada pelo FastAPI para testar todos os endpoints diretamente no navegador:
+
+- **Swagger UI**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **ReDoc**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+
+---
+
+## ðŸ‘¨â€ðŸ’» PropÃ³sito e Natureza do Projeto
+
+Este projeto possui carÃ¡ter **estritamente acadÃªmico**, desenvolvido no Ã¢mbito de estudos universitÃ¡rios/cursos de tecnologia com o objetivo de exercitar e consolidar conceitos fundamentais de desenvolvimento de software:
+
+- **Arquitetura em Camadas (Layered Architecture)** com separaÃ§Ã£o estrita de DomÃ­nio, RepositÃ³rio, ServiÃ§o e Rotas.
+- **APIs RESTful assÃ­ncronas** de alta performance com **FastAPI**.
+- **Mapeamento Objeto-Relacional (ORM)** e controle de sessÃµes transacionais com **SQLAlchemy 2.0**.
+- **ValidaÃ§Ã£o de tipos e contratos** de dados com **Pydantic**.
+- **AutenticaÃ§Ã£o e Criptografia** com hashing seguro via **Bcrypt**.
+- **SegregaÃ§Ã£o de interfaces e experiÃªncia do usuÃ¡rio (UX)** com JavaScript Vanilla e **SweetAlert2**.
+
+> âš ï¸ **Aviso de NÃ£o-ProduÃ§Ã£o**: Este sistema foi desenvolvido como material didÃ¡tico e simulador de fluxo hoteleiro. NÃ£o possui suporte comercial, garantias de SLA, alta disponibilidade distribuÃ­da, nem auditoria para conformidade legal (LGPD). **NÃ£o deve ser utilizado em ambientes de produÃ§Ã£o.**
+
+---
+
+*Hotel CheckQ â€” Projeto AcadÃªmico de GestÃ£o Hoteleira.* ðŸ¨ðŸŽ“
+# hotel-CheckQ
+
+
+=== ARQUIVO: C:\Users\Victhor\Documents\estudos\faculdade\hotel-CheckQ\requirements.txt ===
+agent-detector==2.0.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+certifi==2026.7.22
+click==8.5.0
+colorama==0.4.6
+detect-installer==0.2.1
+dnspython==2.8.0
+email-validator==2.3.0
+fastapi==0.141.1
+fastapi-cli==0.0.32
+fastapi-cloud-cli==0.25.0
+fastar==0.12.0
+greenlet==3.5.5
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.19
+Jinja2==3.1.6
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+pydantic==2.13.5
+pydantic-extra-types==2.11.1
+pydantic-settings==2.15.0
+pydantic_core==2.46.5
+Pygments==2.21.0
+python-dotenv==1.2.3
+python-multipart==0.0.32
+PyYAML==6.0.3
+rich==15.0.0
+rich-toolkit==0.20.4
+rignore==0.8.1
+sentry-sdk==2.68.1
+shellingham==1.5.4
+SQLAlchemy==2.0.52
+starlette==1.6.0
+typer==0.27.2
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.52.4
+watchfiles==1.2.0
+websockets==17.1
+
+
+
